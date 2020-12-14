@@ -1,0 +1,224 @@
+<!-- templates/geodjango_ca1/map.html -->
+{% extends 'base.html' %}
+
+{% load leaflet_tags %}
+{% load static %}
+{% load crispy_forms_tags %}
+{% load crispy_forms_filters %}
+{% load i18n %}
+
+{% block title %}{% trans "Map" %}{% endblock %}
+
+{% block extra_header %}
+    <style>
+        #map{
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+{% endblock %}
+
+{% block body_content %}
+
+    <select id="placeType" style="float: right" class="browser-default custom-select" onchange="onSelectPlaceType()">
+        <option selected disabled hidden>Please choose a type of place</option>
+        <optgroup label="Transport">
+        <option value="airport">Airport</option>
+        <option value="bus_station">Bus Station</option>
+        </optgroup>
+        <optgroup label="Health">
+        <option value="hospital">Hospital</option>
+        <option value="pharmacy">Pharmacy</option>
+        </optgroup>
+        <optgroup label="Food">
+        <option value="cafe">Cafe</option>
+        <option value="delivery">Delivery</option>
+        </optgroup>
+    </select>
+
+    <!-- Map -->
+    {#      <h3>{% trans "Map" %}</h3> #}
+    {# <div style="width: 100%"> #}
+    {% leaflet_map "map" callback="window.map_init_basic" %}
+    {# </div> #}
+{% endblock %}
+
+{% block extra_footer %}
+    <script>
+        var HOST = location.protocol + "//" + location.host;
+        var locationMarker;
+        var circle;
+        var places = [];
+        var markers = [];
+        var myMap;
+        var currentLat;
+        var currentLng;
+
+
+        $("#map").css({
+            "width": "100%",
+            "height": $(document).height() - ($("#header").height() + $("#footer").height() + 45)
+        });
+
+        function map_init_basic(map, options) {
+            var pos;
+            myMap = map;
+            map.setView([53.5, -8.5], 11)
+            updateLocation(map);
+        }
+
+        // The function updateLocation takes our map object, figures out our location and
+        // passes the map object and location data to a further function (setMapToCurrentLocation)
+        function updateLocation(map) {
+            console.log("getCurrentLocation");
+            navigator.geolocation.getCurrentPosition(
+                function (pos) {
+                    console.log("Got location");
+                    currentLat = pos.coords.latitude;
+                    currentLng = pos.coords.longitude;
+                    setMapToCurrentLocation(map, pos);
+                    update_db(pos);
+                },
+                function (err) {
+                    console.log("Location error: " + err.message);
+                },
+                {
+                    enableHighAccuracy: true,
+                    timeout: 30000
+                }
+            );
+        }
+
+        // Create a LatLng object with your current location
+        // Note: Anything starting with L.xxx is a leaflet object
+        // Sets the map to centre to your location
+        function setMapToCurrentLocation(map, pos) {
+            console.log("In setMapToCurrentLocation.");
+            var myLatiLon = L.latLng(pos.coords.latitude, pos.coords.longitude);
+            map.flyTo(myLatiLon, 16);
+
+            // Adds a marker showing your location and a circle
+            if (locationMarker) {
+                map.removeLayer(locationMarker);
+            }
+
+            locationMarker = L.marker(myLatiLon).addTo(map).on('click', function(e){
+                $(".toast-body").html("Location<br>Lat: " + myLatiLon.lat + "<br>Lon: " + myLatiLon.lng);
+                $(".toast").toast('show');
+            });
+            if (circle) {
+                map.removeLayer(circle);
+            }
+
+            // Circle properties
+            circle = L.circle(myLatiLon, {
+                color: 'blue',
+                fillColor: 'blue',
+                fillOpacity: 0.2,
+                radius: pos.coords.accuracy
+            }).addTo(map);
+
+
+        }
+
+        function update_db(pos) {
+            var locString = pos.coords.longitude + ", " + pos.coords.latitude;
+            $.ajax({
+                type: "POST",
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                url: HOST + "/world/updatedb/",
+                data: {
+                    lat: pos.coords.longitude,
+                    lon: pos.coords.latitude
+                }
+            }).done(function (data, status, xhr) {
+                console.log(data["message"])
+                var oriMsg = $(".toast-body").html();
+                $(".toast-body").html(oriMsg + "Lat: " + pos.coords.latitude + "<br>Lon: " + pos.coords.longitude + "<br/>Updated database<br/>" + data["message"]);
+            }).fail(function (xhr, status, error) {
+                console.log(error);
+                var oriMsg = $(".toast-body").html();
+                $(".toast-body").html(oriMsg + "<br/>" + error);
+            }).always(function () {
+                console.log("find_loc_ed finished");
+                $(".toast").toast('show');
+            });
+        }
+
+        function getCookie(name){
+            var cookieValue = null;
+            if(document.cookie && document.cookie !== ''){
+                var cookies = document.cookie.split(';');
+                for(var i = 0; i <cookies.length; i++){
+                    var cookie = jQuery.trim(cookies[i]);
+                    if(cookie.substring(0, name.length + 1) === (name + '=')){
+                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                        break;
+                    }
+                }
+            }
+            return cookieValue;
+        }
+
+        class Place {
+            constructor(name, address, lat, lng) {
+                this.name = name;
+                this.address = address;
+                this.lat = lat;
+                this.lng = lng;
+            }
+        }
+
+        function onSelectPlaceType(){
+            var placeType = document.getElementById("placeType").value;
+            console.log(currentLat)
+            console.log(currentLng)
+            console.log(placeType)
+
+            removeMarker();
+            $.ajax({
+                type: "POST",
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken')
+                },
+                url: HOST + "/world/updatePlace/",
+                data: {
+                    type: placeType,
+                    lat: currentLat,
+                    lng: currentLng
+                }
+            }).done(function (data, status, xhr) {
+                for (i = 0; i < data['names'].length; i++){
+                    currentPlace = new Place(data['names'][i], data['address'][i], data['lat'][i], data['lng'][i])
+                    places.push(currentPlace)
+                    addMarker(currentPlace);
+                }
+            }).fail(function (xhr, status, error) {
+                console.log(error);
+            })
+        }
+
+        function removeMarker(){
+            if(markers.length !== 0){
+                for (i = 0; i < markers.length; i++){
+                    myMap.removeLayer(markers[i]);
+                }
+                markers = new Array();
+                places = new Array();
+            }
+        }
+
+        function addMarker(currentPlace){
+            latLng = L.latLng(currentPlace.lat, currentPlace.lng);
+            locationMarker = L.marker(latLng).addTo(myMap).on('click', function(e){
+                $(".toast-header .mr-auto").html(currentPlace.name);
+                $(".toast-body").html("Address: " + currentPlace.address + "<br>Lat: " + currentPlace.lat + "<br>Lon: " + currentPlace.lng);
+                $(".toast").toast('show');
+            });
+            markers.push(locationMarker);
+        }
+
+    </script>
+{% endblock %}
